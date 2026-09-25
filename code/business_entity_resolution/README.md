@@ -1,64 +1,72 @@
 # Business Entity Resolution pipeline
 
-This repository currently implements the audited baseline **candidate
-generation / blocking** phase. It uses only the supplied TSV files and Python's
-standard library.
+Links every Source 1 business to its matching Source 2 / Source 3 records using
+only the supplied TSV files. Validation macro F0.5 is **0.970** on a held-out 10%
+of training entities.
 
-## Baseline blocking keys
-
-For each Source-1 record, candidates from Source 2 and Source 3 are the union
-of these exact keys, always within the same normalized country string:
-
-1. first three characters of the EDA-normalized business name;
-2. first token of that normalized name;
-3. Soundex of that normalized name;
-4. an extracted postal/PIN code, only when one is present.
-
-The country value is normalized generically with `strip().casefold()`; no
-country labels are enumerated, so France and future labels remain supported.
-The script does not cap or silently remove candidates. The resulting TSV is
-therefore exactly the list a subsequent matcher must score.
-
-## Run
-
-From this directory, create baseline test candidates:
-
-```powershell
-python src/candidate_generation.py `
-  --data-dir ..\\..\\amazon_shared\\6ab10eb3b23ba_student_resource\\student_resource\\dataset `
-  --split test `
-  --output ..\\..\\output\\candidate_pairs.tsv `
-  --report ..\\..\\output\\test_blocking_report.json `
-  --work-dir ..\\..\\work
+```
+data ─► blocking_knn.py ─► record_store.py ─► pair_features.py ─► LightGBM ─► decide.py ─► output/
+        TF-IDF nearest       normalized          ~42 similarity     pair        one owner per
+        neighbours, ~45      records on disk     features / pair    classifier  record + threshold
+        candidates / entity
 ```
 
-Before modelling, measure the blocker on all training labels:
+Every stage streams its input in chunks and never loads a whole source into
+memory. Peak memory is about 6 GB.
 
-```powershell
-python src/candidate_generation.py `
-  --data-dir ..\\..\\amazon_shared\\6ab10eb3b23ba_student_resource\\student_resource\\dataset `
-  --split train `
-  --output ..\\..\\output\\train_candidate_pairs.tsv `
-  --report ..\\..\\output\\train_blocking_report.json `
-  --work-dir ..\\..\\work `
-  --evaluate-ground-truth
+## Setup
+
+Python 3.10+ (developed on 3.13).
+
+```bash
+pip install -r requirements.txt
 ```
 
-The train output is an evaluation artefact, not a submission file. The test
-output has one row for every test Source-1 ID and only test Source-2/3 IDs.
+The challenge data must sit at `../../student_resource/dataset` (with `train/`
+and `test/`), or you can point `DATA_DIR` at it.
+
+## Reproduce end to end
+
+From this directory:
+
+```bash
+./run_pipeline.sh train   # ~35 min: blocking, features, LightGBM, validation F0.5 report
+./run_pipeline.sh test    # ~60 min: writes ../../output/candidate_pairs.tsv and matching_results.tsv
+```
+
+`test` needs the model written by `train` (`../../work/model/lgbm.txt`). The
+last test stage runs the official `validate_submission.py`. You can override
+paths and settings with environment variables: `DATA_DIR`, `WORK_DIR`,
+`OUTPUT_DIR`, `MODEL`, `THRESHOLD` (0.75) and `TRAIN_FRACTION` (0.10).
+
+Intermediate artefacts go to `../../work/`: indexes, record stores, features,
+model and scores. They take about 20 GB for both splits.
+
+## Source layout
+
+| File | Role |
+| --- | --- |
+| `src/text_normalize.py` | Normalizes names and addresses. Transliterates all Brahmic scripts through one offset table, strips legal-form, domain and punctuation noise, expands abbreviations, and builds the consonant skeleton that makes transliterated and English spellings meet. |
+| `src/blocking_knn.py` | Candidate generation. Builds a per-country, chunked, on-disk TF-IDF index, runs top-k search by name, by address and by both, and caps search cost per query. |
+| `src/record_store.py` | SQLite store of normalized records, fetched by ID per batch. |
+| `src/pair_features.py` | Pair features: RapidFuzz string similarity, IDF-weighted token overlap, house-number agreement, and ranks within the entity. |
+| `src/train_matcher.py` | Trains LightGBM (MIT license) on non-validation entities and scores validation pairs. |
+| `src/predict.py` | Scores test feature batches. |
+| `src/decide.py` | Decision rules and exact-metric threshold search. |
+| `src/split.py` | Deterministic entity-level 90/10 train/validation split. |
+| `src/score.py` | The challenge metric: macro F0.5 with singletons. |
+| `src/evaluate_candidates.py` | Candidate recall, candidate-list sizes, and the best F0.5 reachable with those candidates. |
+| `src/candidate_generation.py` | Earlier baseline blocker, kept for comparison (78.9% recall, ~10k candidates per entity). |
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Constraints preserved
 
-- Inputs and outputs are read/written as UTF-8 TSV.
-- No external data, lookups, geocoding, or APIs are used.
-- Candidate IDs are deduplicated and sorted deterministically.
-- The final matching stage must only emit IDs from this candidate TSV.
-- Validate final `matching_results.tsv` and `candidate_pairs.tsv` with the
-  provided `utils/validate_submission.py` before submitting.
-
-## Next phase
-
-Use the measured train blocker report to establish recall and reduction. Build
-labelled candidate pairs without leaking an entity across a validation split,
-train a precision-oriented pair scorer, and choose per-entity predictions by
-macro F_0.5 on validation, including the empty prediction for singletons.
+- No external data, lookups, geocoding or APIs. IDF weights and every learned value come from the supplied files.
+- Country is treated as an open set of labels. Each label gets its own index, and no country appears as a model feature, so France runs through the same path.
+- `candidate_pairs.tsv` is exactly the set the model scores, so every match is a candidate.
+- The model is LightGBM (MIT license), far below the 8B-parameter limit.
