@@ -1,0 +1,1 @@
+# Candidate generation uses only the Python 3.8+ standard library.
