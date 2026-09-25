@@ -1,1 +1,8 @@
-# Candidate generation uses only the Python 3.8+ standard library.
+# Python 3.10+ (developed on 3.13). candidate_generation.py (baseline) is stdlib-only.
+numpy==2.3.5
+scipy==1.16.3
+scikit-learn==1.7.2
+lightgbm==4.7.0
+rapidfuzz==3.14.6
+pyarrow==21.0.0
+polars==1.42.1
