@@ -25,6 +25,21 @@ eda_evidence_report.json                # EDA evidence
 status.md                               # formal status and plan
 ```
 
+## What each repository item is
+
+| Item | Purpose |
+| --- | --- |
+| `code/business_entity_resolution/` | Runnable pipeline code and its smoke test. |
+| `.gitignore` | Prevents the local challenge data and generated artefacts from being committed. |
+| `EDA_AUDIT.md` | Records which EDA findings are reliable and documents the corrected reduction-ratio issue. |
+| `README.md` | Project entry point: scope, layout, commands, validation, and next phase. |
+| `eda_entity_resolution.py` | Original exploratory data-analysis script used to inspect schemas, linkage topology, noise, and blocking evidence. |
+| `eda_evidence_report.json` | Machine-readable quantitative EDA results. |
+| `eda_evidence_report.md` | Short human-readable summary of the EDA evidence. |
+| `peek_addresses.py` | Small local utility for manually inspecting address examples; it is not part of the production pipeline. |
+| `status.md` | Formal project record covering completed work, risks, blockers, and proposed next steps. |
+| `amazon_shared/` | Local, Git-ignored copy of the official challenge materials and dataset; do not edit or commit it. |
+
 ## Requirements and tests
 
 Candidate generation uses Python 3.8+ standard-library modules only. Run from the repository root:
