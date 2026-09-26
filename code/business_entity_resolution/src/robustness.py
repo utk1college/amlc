@@ -25,7 +25,7 @@ import polars as pl
 from sklearn.metrics import roc_auc_score
 
 from decide import decide, to_links
-from pair_features import FEATURE_COLUMNS
+from pair_features import FEATURE_COLUMNS, V2_FEATURES
 from score import read_links, score
 from split import is_validation
 from train_matcher import PARAMS
@@ -144,7 +144,11 @@ def main():
     for sp in (p, q):
         sp.add_argument("--threads", type=int, default=6)
         sp.add_argument("--out")
+        sp.add_argument("--features", choices=("v3", "v2"), default="v3",
+                        help="v2 for feature files written by the v2 pipeline")
     args = parser.parse_args()
+    global FEATURE_COLUMNS
+    FEATURE_COLUMNS = V2_FEATURES if args.features == "v2" else FEATURE_COLUMNS
 
     if args.command == "loco":
         args.train_country, args.eval_country = args.train_country.casefold(), args.eval_country.casefold()

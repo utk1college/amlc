@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Score feature batches with a trained matcher, one batch at a time.
+"""Score feature batches with the mean of the fold models, one batch at a time.
 
-Only pairs scoring at least --floor are written. No decision rule in
-decide.py can select a pair below its thresholds, so any floor at or below
-the lowest threshold in use gives identical matches from a much smaller file.
+Test scores are the average of the same fold models whose out-of-fold scores
+Stage 2 and the decision rule were tuned on, so both share one distribution.
+Only pairs scoring at least --floor are written; any floor at or below the
+lowest threshold later used gives identical decisions from a smaller file.
 """
 
 import argparse
@@ -16,24 +17,28 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from pair_features import FEATURE_COLUMNS
-from train_matcher import matrix
+from train_matcher import feature_list
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Score candidate-pair features.")
+    parser = argparse.ArgumentParser(description="Score candidate-pair features with the fold models.")
     parser.add_argument("--features-dir", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model-dir", required=True, help="Directory with fold*.txt from train_matcher.py")
+    parser.add_argument("--features", choices=("v3", "v2"), default="v3")
     parser.add_argument("--scores-out", required=True)
-    parser.add_argument("--floor", type=float, default=0.3)
-    parser.add_argument("--threads", type=int, default=6)
+    parser.add_argument("--floor", type=float, default=0.0)
+    parser.add_argument("--threads", type=int, default=int(os.environ.get("WORKERS", os.cpu_count() or 4)))
     args = parser.parse_args()
 
-    model = lgb.Booster(model_file=args.model)
+    columns = feature_list(args.features)
+    models = [lgb.Booster(model_file=path) for path in sorted(glob.glob(os.path.join(args.model_dir, "fold*.txt")))]
+    if not models:
+        raise SystemExit(f"no fold models in {args.model_dir}")
     writer, scored, kept, started = None, 0, 0, time.time()
     for path in sorted(glob.glob(os.path.join(args.features_dir, "*.parquet"))):
-        table = pq.read_table(path, columns=["source1_id", "target_id", *FEATURE_COLUMNS])
-        scores = model.predict(matrix(table), num_threads=args.threads).astype(np.float32)
+        table = pq.read_table(path, columns=["source1_id", "target_id", *columns])
+        matrix = np.column_stack([table.column(c).to_numpy(zero_copy_only=False) for c in columns]).astype(np.float32)
+        scores = np.mean([m.predict(matrix, num_threads=args.threads) for m in models], axis=0).astype(np.float32)
         keep = pa.array(scores >= args.floor)
         out = pa.table({"source1_id": table.column("source1_id"), "target_id": table.column("target_id"),
                         "score": scores}).filter(keep)
@@ -43,7 +48,8 @@ def main():
         kept += out.num_rows
     if writer:
         writer.close()
-    print(f"scored {scored} pairs, kept {kept} at score >= {args.floor}, {time.time() - started:.0f}s")
+    print(f"scored {scored} pairs with {len(models)} fold models, kept {kept} at score >= {args.floor}, "
+          f"{time.time() - started:.0f}s")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ import time
 import numpy as np
 import polars as pl
 
-from merge_candidates import combine, reverse_pairs, selection
+from merge_candidates import censor, combine, reverse_pairs, selection
 from split import lab_set
 from text_normalize import RE_ALIAS, RE_DOTTED, join_dotted, script_flags, to_ascii
 
@@ -359,6 +359,7 @@ def main():
     sub.choices["export"].add_argument("--set", default="e2e_confirm")
     sub.choices["export"].add_argument("--v2", help="Export this v2 TSV restricted to the set instead")
     sub.choices["export"].add_argument("--tsv", required=True)
+    sub.choices["export"].add_argument("--pairs-dir", help="Also write the selected pairs with metadata (Parquet)")
     args = parser.parse_args()
 
     started = time.time()
@@ -381,6 +382,9 @@ def main():
                 scan_pairs(args.embedding if config.get("emb_form", "name") == "name" else args.embedding_alt,
                            members.select("source1_id")) if (args.embedding and config.get("emb_rank", 0) > 0) else None)
                 if f is not None]), config)
+        if not args.v2 and args.pairs_dir:
+            os.makedirs(args.pairs_dir, exist_ok=True)
+            censor(pairs, config).write_parquet(os.path.join(args.pairs_dir, "part-000.parquet"))
         lists = dict(pairs.group_by("source1_id").agg(pl.col("target_id").sort()).iter_rows())
         with open(args.tsv, "w", encoding="utf-8") as handle:
             handle.write("source1_entity_id\tcandidate_entity_ids\n")

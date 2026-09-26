@@ -12,21 +12,25 @@ import sqlite3
 import sys
 import time
 from collections import deque
-from multiprocessing import get_context
+from multiprocessing import get_all_start_methods, get_context
 
-from text_normalize import normalize_address, normalize_name, skeleton
+from text_normalize import core_name, name_variants, normalize_address, script_flags, skeleton
 
-COLUMNS = ("id", "country", "name", "name_skeleton", "address", "address_skeleton", "non_ascii_name")
+# variants: the alias parts of an "X aka Y" name joined by "|" (empty when none).
+COLUMNS = ("id", "country", "name", "name_skeleton", "address", "address_skeleton", "core", "variants",
+           "nonlatin", "accented")
 BATCH_ROWS = 100_000
 
 
 def normalize_rows(rows):
     out = []
     for entity_id, name, address, country in rows:
-        normalized_name = normalize_name(name)
+        variants = name_variants(name)
         normalized_address = normalize_address(address)
-        out.append((entity_id, country.strip().casefold(), normalized_name, skeleton(normalized_name),
-                    normalized_address, skeleton(normalized_address), int(not name.isascii())))
+        nonlatin, accented = script_flags(name)
+        out.append((entity_id, country.strip().casefold(), variants[0], skeleton(variants[0]),
+                    normalized_address, skeleton(normalized_address), core_name(name), "|".join(variants[1:]),
+                    int(nonlatin), int(accented)))
     return out
 
 
@@ -63,7 +67,7 @@ def build(data_dir, split, database, workers):
     connection.execute(f"CREATE TABLE records ({', '.join(COLUMNS)})")
     insert = f"INSERT INTO records VALUES ({', '.join('?' * len(COLUMNS))})"
     total = 0
-    with get_context("fork").Pool(workers) as pool:
+    with get_context("fork" if "fork" in get_all_start_methods() else "spawn").Pool(workers) as pool:
         for source in (1, 2, 3):
             path = os.path.join(data_dir, split, f"{split}_source{source}.tsv")
             for rows in bounded_imap(pool, normalize_rows, stream_rows(path, BATCH_ROWS), workers + 2):
@@ -111,7 +115,7 @@ def main():
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--split", choices=("train", "test"), required=True)
     parser.add_argument("--database", required=True)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("WORKERS", 4)))
     args = parser.parse_args()
     started = time.time()
     total = build(args.data_dir, args.split, args.database, args.workers)

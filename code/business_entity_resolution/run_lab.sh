@@ -7,6 +7,8 @@
 #   ./run_lab.sh confirm              gate 1 on block_confirm against the v2 candidates
 #   ./run_lab.sh oracle               what the remaining block_dev misses look like
 #   ./run_lab.sh export               e2e_confirm candidate TSVs (v3 and v2) for gate 2
+#   ./run_lab.sh gate2                end-to-end gate on e2e_confirm (real macro F0.5, v2 vs v3)
+#   ./run_lab.sh embed <split> <form> e5 embedding pass (form: name | name_address); needs E5_DIR
 #
 # Embedding pairs are picked up from $WORK_DIR/lab/embedding_{name,name_address} when present.
 set -euo pipefail
@@ -68,10 +70,39 @@ case "${1:-}" in
     stage "e2e_confirm candidates (v3 and v2)"
     # shellcheck disable=SC2046
     $PY "$SRC/blocking_lab.py" export --data-dir "$DATA_DIR" --forward "$LAB/forward" $(optional) \
-      --config "$CONFIG" --tsv "$LAB/e2e_v3.tsv" --out "$LAB/export_v3.json"
+      --config "$CONFIG" --tsv "$LAB/e2e_v3.tsv" --pairs-dir "$LAB/e2e_v3" --out "$LAB/export_v3.json"
     $PY "$SRC/blocking_lab.py" export --data-dir "$DATA_DIR" --v2 "$V2_CANDIDATES" \
       --tsv "$LAB/e2e_v2.tsv" --out "$LAB/export_v2.json"
     ;;
-  *) sed -n '2,12p' "$0"; exit 2 ;;
+  gate2)
+    stage "record store (train, v3 normalization)"
+    [ -f "$WORK_DIR/records3_train.sqlite" ] || $PY "$SRC/record_store.py" --data-dir "$DATA_DIR" --split train \
+      --database "$WORK_DIR/records3_train.sqlite"
+    stage "gate 2 on e2e_confirm (v2 vs v3 candidates, v2 features, fixed model)"
+    $PY "$SRC/e2e_gate.py" --v2-candidates "$LAB/e2e_v2.tsv" --v3-candidates "$LAB/e2e_v3" \
+      --database "$WORK_DIR/records3_train.sqlite" --index-dir "$WORK_DIR/index3/train" \
+      --truth "$DATA_DIR/train/train_ground_truth.tsv" \
+      --w "$($PY -c "import json; print(json.load(open('$CONFIG'))['_w'])")" --work-dir "$LAB" --out "$LAB/gate2.json"
+    ;;
+  embed)  # embed <split> <form>: encode, (train: tune efSearch on block_dev), search
+    split="$2"; form="$3"
+    : "${E5_DIR:?set E5_DIR to the local multilingual-e5-small folder}"
+    cache="$WORK_DIR/emb_cache/$split"
+    stage "encode $split ($form)"
+    $PY "$SRC/embed_block.py" encode --data-dir "$DATA_DIR" --split "$split" --out-dir "$cache" --form "$form" \
+      --model-dir "$E5_DIR" --device "${DEVICE:-cpu}" --report "$cache/encode_$form.json"
+    if [ "$split" = train ]; then
+      stage "tune efSearch on block_dev ($form)"
+      $PY "$SRC/embed_block.py" tune --data-dir "$DATA_DIR" --out-dir "$cache" --form "$form" --report "$LAB/embed_tune_$form.json"
+      out="$LAB/embedding_$form"
+    else
+      out="$WORK_DIR/embedding/${split}_$form"
+    fi
+    ef="$($PY -c "import json; print(json.load(open('$LAB/embed_tune_$form.json'))['chosen_ef_search'] or 512)")"
+    stage "search $split ($form, efSearch $ef)"
+    $PY "$SRC/embed_block.py" search --data-dir "$DATA_DIR" --out-dir "$cache" --form "$form" --ef-search "$ef" \
+      --pairs-out "$out" --report "$out.json"
+    ;;
+  *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
 stage "done"
