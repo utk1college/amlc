@@ -1,46 +1,63 @@
 # Project Status — Business Entity Resolution
 
-**Date:** 2026-09-26  
-**Status:** The end-to-end pipeline is complete. Validation macro F₀.₅ is 0.970. The first test submission is being generated.
+**Date:** 2026-09-26
+**Status:** The Stage 1 v3 code is complete, tested and pushed. It has not run on the real data yet; the next step is the run on the rented WSL box (see `RUN.md`).
+
+## Scores so far
+
+| | Macro F₀.₅ |
+| --- | --- |
+| v2 validation (220,680 held-out training entities) | 0.9696 |
+| v2 public leaderboard | 0.961 |
 
 ## Objective and constraints
 
-Map every Source 1 test record to zero or more matching Source 2/3 records. The score is macro F₀.₅ per Source 1 entity, with singletons included. Other constraints:
+Map every Source 1 test record to zero or more Source 2/3 records. The score is macro F₀.₅ per Source 1 entity, with singletons included. Other constraints:
 - Output files are strict TSV.
-- Unseen countries (France) must be handled.
-- No external data or services.
-- A permitted model of at most 8B parameters.
+- France appears only in the test set.
+- No external data, lookups or APIs.
+- Models must be MIT/Apache-licensed and at most 8B parameters.
 
-## Measured results
+## Stage 1 v3 — what changed
 
-| Stage | Result |
-| --- | --- |
-| Scorer | Exact macro F₀.₅ (`score.py`). The all-empty baseline scores 0.0557 on validation. |
-| Split | Deterministic 90/10 split by Source 1 ID: 1,986,141 train and 220,680 validation entities, 5.6% singletons in each. |
-| Old blocker (key-based) | 78.9% recall, ~10,550 candidates per entity (median), best possible F₀.₅ 0.910. Would write ~320 GB on test. |
-| **Blocker (TF-IDF nearest neighbours)** | **96.4% recall, 44.6 candidates per entity, best possible F₀.₅ 0.988** on validation. Full train takes 17 min at 4.3 GB peak. |
-| **Matcher (LightGBM, 42 features)** | Trained on 8.39M pairs from 10% of train entities; 1,079 rounds. |
-| **Decision (one owner + threshold 0.75)** | **Validation macro F₀.₅ 0.9696**, link precision 99.3%, recall 92.8%, singletons 0.971. |
+- **Normalization:**
+  - Dotted abbreviations become one token (`l.l.c.` → `llc`).
+  - Alias names are split into variants (`X aka Y`, `d/b/a`, `trading as`, `f/k/a`).
+  - The core name drops legal forms and dotted credentials.
+  - French street-type variants and `No`/`N°` number markers are normalized. Every entry is observed in the unlabeled data.
+- **Blocking:**
+  - Forward views: name, address word, address character and combined C1 = w·name + (1−w)·address.
+  - The index holds one row per alias variant.
+  - Reverse pass: Source 2/3 → Source 1.
+  - Embedding pass (e5-small, MIT) for non-Latin-script targets, searched with FAISS HNSW.
+- **Blocking lab:**
+  - Disjoint hash-defined sets: BLOCK_DEV (selection), BLOCK_CONFIRM (Gate 1) and E2E_CONFIRM (Gate 2, real macro F₀.₅). None touches the 10% validation.
+  - Greedy selection over fixed grids, with every accepted step required to beat 2 paired-bootstrap SE.
+  - A miss oracle reports what the remaining misses look like.
+- **Matcher:**
+  - About 90 label-free features, including exact per-view cosines and retrieval metadata. The v2 features are kept intact for Gate 2.
+  - LightGBM with 3 entity-grouped OOF folds; validation and test scores are the mean of the fold models.
+  - The decision threshold is tuned on OOF.
+  - Stratified Neyman sampling applies only if rows exceed the memory budget.
+  - Shuffled-label and learning-curve checks are included.
+- **Diagnostics:** loss split, val-vs-test shift, leave-one-country-out and adversarial validation.
 
-Key data facts behind the design:
-- Every Source 2/3 record belongs to at most one Source 1 entity (7,638,365 links, all distinct).
-- 15% / 12% of Source 2 / Source 3 names are in Indian scripts, while Source 1 is all ASCII.
-- No link crosses countries.
+## Verified locally
+
+- 29 unit tests pass.
+- A full synthetic end-to-end run completes, and the official validator returns PASS.
+- The shuffled-label check falls to the all-empty baseline, as it should.
+
+## Next steps
+
+1. Run the v2 baseline on the box. It gives the v2 candidates and measures the box's throughput.
+2. Run the lab: dump, choose w, reverse, embedding, select, then Gates 1 and 2.
+3. If both gates pass, run the full v3 pipeline and upload submission A (a leaderboard sanity check only).
+4. Stage 2 re-ranker and calibrated decision layer.
+5. Report validation once, then package.
 
 ## Risks
 
-- **One-owner effect is under-measured.** On validation, only validation entities compete for each record (10% of the pool). The rule's effect on test, where everyone competes, is expected to be larger but is not yet measured.
-- **Only 10% of training entities were used for fitting.**
-- **France is unseen.** Features and blocking are language-agnostic and country is not a model feature, but France has no labels to check against.
-- **Misses split evenly.** 27.3k missed links were never candidates (Indian Source 3, Indian-script names, empty addresses), and 28.0k were rejected by the model (house-number drift, missing target address).
-
-## Next steps (by expected gain)
-
-1. Score every training entity, so the one-owner competition is complete on validation. Then re-tune the threshold.
-2. Train on 30–100% of the training entities.
-3. Add record-side competition features: how many Source 1 entities a record could go to, and the gap to its second-best entity.
-4. Raise k for Indian and Indian-script queries to recover blocking misses.
-
-## Memory rule
-
-Every stage streams in chunks. Heavy runs are started under a watchdog that kills the job above 12 GB. An earlier unbounded version of the blocker exhausted RAM.
+- France has no labels and is checked only by label-free drift reports.
+- Test pools are denser: 5.75 targets per Source 1 entity, against 4.68 in train.
+- Time: 1.5 days remain.
