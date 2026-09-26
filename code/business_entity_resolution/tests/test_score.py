@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from score import entity_f05, score  # noqa: E402
-from split import is_validation  # noqa: E402
+from split import is_validation, lab_set, oof_fold  # noqa: E402
 
 
 class ScoreTest(unittest.TestCase):
@@ -33,6 +33,20 @@ class ScoreTest(unittest.TestCase):
         first = [is_validation(x) for x in ids]
         self.assertEqual(first, [is_validation(x) for x in ids])
         self.assertAlmostEqual(sum(first) / len(ids), 0.10, delta=0.01)
+
+    def test_lab_sets_and_folds_never_touch_validation(self):
+        ids = [f"S1-{n}" for n in range(100000)]
+        sets = [lab_set(x) for x in ids]
+        folds = [oof_fold(x) for x in ids]
+        for x, s, f in zip(ids, sets, folds):
+            if is_validation(x):
+                self.assertIsNone(s)
+                self.assertIsNone(f)
+            else:
+                self.assertIn(f, (0, 1, 2))
+        non_val = sum(not is_validation(x) for x in ids)
+        for name, share in (("block_dev", 0.025), ("block_confirm", 0.025), ("e2e_confirm", 0.05)):
+            self.assertAlmostEqual(sets.count(name) / non_val, share, delta=0.004)
 
 
 if __name__ == "__main__":

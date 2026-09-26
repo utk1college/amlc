@@ -13,11 +13,37 @@ import sys
 
 VALIDATION_FRACTION = 0.10
 HEADER = "source1_entity_id\tmatched_entity_ids\n"
+# Disjoint lab sets inside the non-validation entities, as shares of a
+# separately salted hash: about 50k / 50k / 100k of the 1.99M entities.
+LAB_SETS = (("block_dev", 0.025), ("block_confirm", 0.05), ("e2e_confirm", 0.10))
+OOF_FOLDS = 3
+
+
+def unit_hash(key):
+    digest = hashlib.md5(key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / 2 ** 64
 
 
 def is_validation(source1_id, fraction=VALIDATION_FRACTION):
-    digest = hashlib.md5(source1_id.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") / 2 ** 64 < fraction
+    return unit_hash(source1_id) < fraction
+
+
+def lab_set(source1_id):
+    """block_dev, block_confirm, e2e_confirm or None; never a validation entity."""
+    if is_validation(source1_id):
+        return None
+    u = unit_hash("lab:" + source1_id)
+    for name, upper in LAB_SETS:
+        if u < upper:
+            return name
+    return None
+
+
+def oof_fold(source1_id, folds=OOF_FOLDS, salt="fold:"):
+    """Entity-grouped fold of a non-validation entity; None for validation."""
+    if is_validation(source1_id):
+        return None
+    return min(int(unit_hash(salt + source1_id) * folds), folds - 1)
 
 
 def main():

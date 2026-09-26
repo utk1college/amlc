@@ -55,9 +55,25 @@ ADDRESS_WORDS = {
     "north": "n", "south": "s", "east": "e", "west": "w", "floor": "fl",
     "building": "bldg", "number": "no", "nagar": "ngr", "circle": "cir",
     "parkway": "pkwy", "terrace": "ter", "square": "sq", "mount": "mt",
+    # French street types: each pair is observed in the unlabeled France pool
+    # (e.g. r 357k / rue 729k, bd 25k / boulevard 38k, rte 12k / route 18k).
+    "r": "rue", "bd": "blvd", "impasse": "imp", "allee": "all", "chemin": "ch",
+    "route": "rte", "cours": "crs", "residence": "res",
 }
+# "No 12" / "N° 12" precede a house number (India 1.3M, France 165k occurrences).
+NUMBER_MARKERS = {"n", "no", "num"}
+# Legal forms and credentials that do not identify the business. Credentials
+# are only dropped from the core name when written dotted ("D.O."), since some
+# are also ordinary words ("do").
+LEGAL_WORDS = {"private", "limited", "incorporated", "corporation", "company", "llc", "llp",
+               "lp", "plc", "pllc", "pc", "sarl", "sas", "sasu", "sa", "eurl", "sci", "snc",
+               "gmbh", "the", "and"}
+DOTTED_CREDENTIALS = {"md", "do", "od", "dds", "lcsw", "pa", "dc", "ei"}
 RE_DOMAIN = re.compile(r"^(?:https?://)?(?:www\.)?([a-z0-9-]+)\.(?:[a-z]{2,6})(?:\.[a-z]{2})?/?$")
 RE_NON_WORD = re.compile(r"[^0-9a-z]+")
+RE_DOTTED = re.compile(r"(?<![a-z0-9])(?:[a-z]\.){2,}[a-z]?(?![a-z0-9])")
+RE_ALIAS = re.compile(r"(?<![a-z0-9])(?:aka|dba|d/b/a|t/a|f/k/a|fka|trading as|doing business as|formerly)"
+                      r"(?![a-z0-9])\s*:?")
 
 
 def transliterate(text):
@@ -115,25 +131,73 @@ def to_ascii(text):
     return "".join(c for c in text if not unicodedata.combining(c)).lower()
 
 
-def normalize_name(text):
+def join_dotted(lowered):
+    """"l.l.c." -> "llc", "s.a.r.l" -> "sarl": dotted abbreviations become one token."""
+    return RE_DOTTED.sub(lambda m: m.group(0).replace(".", ""), lowered)
+
+
+def _name_tokens(lowered):
     tokens = []
-    for raw in to_ascii(text).replace("&", " and ").split():
+    for raw in lowered.replace("&", " and ").split():
         domain = RE_DOMAIN.match(raw)
         if domain:
             raw = domain.group(1)
         for token in RE_NON_WORD.split(raw):
             if token:
                 tokens.append(LEGAL_FORMS.get(token, token))
-    return " ".join(tokens)
+    return tokens
+
+
+def normalize_name(text):
+    return " ".join(_name_tokens(join_dotted(to_ascii(text))))
+
+
+def core_name(text):
+    """Normalized name without legal forms (and without dotted credentials)."""
+    lowered = to_ascii(text)
+    dotted = {m.replace(".", "") for m in RE_DOTTED.findall(lowered)}
+    return " ".join(t for t in _name_tokens(join_dotted(lowered))
+                    if t not in LEGAL_WORDS and not (t in DOTTED_CREDENTIALS and t in dotted))
+
+
+def name_variants(text):
+    """The normalized name, plus both sides of an "X aka Y" / "X d/b/a Y" alias.
+
+    Only split when both sides keep at least one token, so a brand that merely
+    starts with "Aka" or "DBA" stays whole.
+    """
+    lowered = join_dotted(to_ascii(text))
+    full = " ".join(_name_tokens(lowered))
+    match = RE_ALIAS.search(lowered)
+    if match:
+        left = " ".join(_name_tokens(lowered[:match.start()]))
+        right = " ".join(_name_tokens(lowered[match.end():]))
+        if left and right:
+            return list(dict.fromkeys((full, left, right)))
+    return [full]
 
 
 def normalize_address(text):
     tokens = []
-    for token in RE_NON_WORD.split(to_ascii(text)):
-        if token:
-            token = (token.lstrip("0") or "0") if token.isdigit() else token
-            tokens.append(ADDRESS_WORDS.get(token, token))
+    raw_tokens = [t for t in RE_NON_WORD.split(to_ascii(text)) if t]
+    for i, token in enumerate(raw_tokens):
+        if token in NUMBER_MARKERS and i + 1 < len(raw_tokens) and raw_tokens[i + 1].isdigit():
+            continue
+        token = (token.lstrip("0") or "0") if token.isdigit() else token
+        tokens.append(ADDRESS_WORDS.get(token, token))
     return " ".join(tokens)
+
+
+def script_flags(text):
+    """(has non-Latin letters, has accented Latin letters)."""
+    nonlatin = accented = False
+    for character in text:
+        if ord(character) >= 0x80 and character.isalpha():
+            if ord(character) > 0x024F:
+                nonlatin = True
+            else:
+                accented = True
+    return nonlatin, accented
 
 
 SKELETON_RULES = [
